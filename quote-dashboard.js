@@ -26,10 +26,12 @@ import { parseCardTitle } from './src/utils/title-parser.js';
 import { findSimilarQuotes } from './src/utils/quote-matcher.js';
 import * as zoho from './src/zoho-api.js';
 
-const app = express();
-app.use(express.json());
+// ---------------------------------------------------------------------------
+// mountPortal(app) — registers all portal routes on the given Express app.
+// Called by src/index.js for Railway deployment, or standalone below.
+// ---------------------------------------------------------------------------
 
-const DASH_PORT = process.env.DASH_PORT || 3456;
+export function mountPortal(app) {
 
 // ---------------------------------------------------------------------------
 // Existing API endpoints (unchanged)
@@ -1045,12 +1047,20 @@ app.get('/dashboard', (_req, res) => {
   res.send(pageShell('Dashboard', 'dashboard', '<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>', dashboardPage()));
 });
 
+} // end mountPortal
+
 // ---------------------------------------------------------------------------
-// Start
+// Standalone mode — run directly with: node --env-file=.env quote-dashboard.js
 // ---------------------------------------------------------------------------
 
-app.listen(DASH_PORT, () => {
-  console.log('[portal] Running on http://localhost:' + DASH_PORT);
-  console.log('[portal] Pages: / /pricing /live /dashboard');
-  console.log('[portal] API: /api/quotes /api/live/estimates /api/dashboard/summary');
-});
+const isMain = !process.argv[1] || import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
+if (isMain) {
+  const app = express();
+  app.use(express.json());
+  mountPortal(app);
+  const DASH_PORT = process.env.DASH_PORT || 3456;
+  app.listen(DASH_PORT, () => {
+    console.log('[portal] Running on http://localhost:' + DASH_PORT);
+    console.log('[portal] Pages: / /pricing /live /dashboard');
+  });
+}
