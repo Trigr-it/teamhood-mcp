@@ -100,7 +100,7 @@ export const cardToolDefs = [
           type: 'string',
           description: 'Status ID to place the card in',
         },
-        ownerId: {
+        assignedUserId: {
           type: 'string',
           description: 'User ID to assign the card to',
         },
@@ -138,7 +138,7 @@ export const cardToolDefs = [
         title: { type: 'string', description: 'New title' },
         description: { type: 'string', description: 'New description' },
         statusId: { type: 'string', description: 'New status ID' },
-        ownerId: { type: 'string', description: 'New owner/assignee ID' },
+        assignedUserId: { type: 'string', description: 'New assignee user ID' },
         tags: { type: 'array', items: { type: 'string' }, description: 'New tags' },
       },
       required: ['card_id'],
@@ -180,7 +180,7 @@ export async function handleCardTool(name, args) {
       return await api.createCard({
         title: args.title,
         statusId: args.statusId,
-        ownerId: args.ownerId,
+        assignedUserId: args.assignedUserId,
         description: args.description,
         tags: args.tags,
         customFields: args.customFields,

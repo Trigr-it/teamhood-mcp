@@ -61,7 +61,7 @@ await test('get_board_metadata returns board info', async () => {
   if (!config.apiKeySet) return 'skip';
   const meta = await api.getBoardMetadata();
   assert(meta, 'Should return board metadata');
-  assert(meta.id || meta.name, 'Should have id or name');
+  assert(meta.board || meta.workspace, 'Should have board or workspace info');
 });
 
 await test('get_board_statuses returns array', async () => {

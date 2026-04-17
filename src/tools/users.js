@@ -49,8 +49,11 @@ export const userToolDefs = [
 
 export async function handleUserTool(name, args) {
   switch (name) {
-    case 'list_users':
-      return await api.listUsers();
+    case 'list_users': {
+      const users = await api.listUsers();
+      if (!users.length) return { users: [], message: 'No users returned — the API key may not have permission for the users endpoint.' };
+      return users;
+    }
 
     case 'get_user_by_name':
       return await api.getUserByName(args.name);

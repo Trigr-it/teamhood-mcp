@@ -6,13 +6,26 @@ import { stripHtml } from './utils/html-strip.js';
 // ---------------------------------------------------------------------------
 
 const API_KEY = process.env.TEAMHOOD_API_KEY;
-const BASE_URL = (process.env.TEAMHOOD_API_BASE_URL || 'https://api.teamhood.com/api').replace(/\/+$/, '');
+// Tenant-specific base URL: https://api-YOURTENANT.teamhood.com
+const BASE_URL = (process.env.TEAMHOOD_API_BASE_URL || 'https://api-node.teamhood.com').replace(/\/+$/, '');
 const WORKSPACE_ID = process.env.TEAMHOOD_WORKSPACE_ID;
 const BOARD_ID = process.env.TEAMHOOD_BOARD_ID;
+
+// Manual UUID→name map (the /api/v1/users endpoint is 403 with this API key)
+let USER_MAP = {};
+try { USER_MAP = JSON.parse(process.env.TEAMHOOD_USER_MAP || '{}'); } catch { /* ignore */ }
+
+function resolveUserName(userId) {
+  if (!userId) return null;
+  return USER_MAP[userId] || userId;
+}
 
 const MAX_PAGES = 20;           // safety cap – 20 pages × 50 items = 1000 items max
 const PAGE_SIZE = 50;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// All public API endpoints use this prefix
+const V1 = '/api/v1';
 
 // ---------------------------------------------------------------------------
 // Metadata cache
@@ -63,15 +76,19 @@ async function apiFetch(path, options = {}) {
 }
 
 /**
- * Unwrap the Teamhood list envelope. Responses come as either:
- *   { items: [...] }            – paginated list
+ * Unwrap the Teamhood list envelope. Responses come as:
+ *   { "workspaces": [...] }     – named wrapper (key varies by resource)
+ *   { "items": [...] }          – paginated list
  *   [ ... ]                     – plain array
- *   { ...single object }       – single item
+ *   { ...single object }        – single item
  */
 function unwrapItems(data) {
   if (!data) return [];
   if (Array.isArray(data)) return data;
-  if (Array.isArray(data.items)) return data.items;
+  // Check for any key that holds an array (e.g. "workspaces", "boards", "items")
+  for (const key of Object.keys(data)) {
+    if (Array.isArray(data[key])) return data[key];
+  }
   return [data];
 }
 
@@ -81,26 +98,29 @@ function unwrapItems(data) {
 
 async function fetchAllPages(path, queryParams = {}) {
   const allItems = [];
-  let page = 1;
+  let pages = 0;
 
-  while (page <= MAX_PAGES) {
-    const params = new URLSearchParams({
-      ...queryParams,
-      page: String(page),
-      pageSize: String(PAGE_SIZE),
-    });
+  // Build initial URL with query params
+  const params = new URLSearchParams(queryParams);
+  let url = `${path}?${params}`;
 
-    const data = await apiFetch(`${path}?${params}`);
+  while (url && pages < MAX_PAGES) {
+    const data = await apiFetch(url);
     const items = unwrapItems(data);
 
+    if (!items.length) break;
     allItems.push(...items);
+    pages++;
 
-    // If we got fewer items than the page size, we've reached the end
-    if (items.length < PAGE_SIZE) break;
-    page++;
+    // Use nextPageUrl for cursor-based pagination if provided
+    const nextUrl = data && data.nextPageUrl;
+    if (!nextUrl) break;
+
+    // nextPageUrl may be absolute or relative
+    url = nextUrl.startsWith('http') ? nextUrl : nextUrl;
   }
 
-  if (page > MAX_PAGES) {
+  if (pages >= MAX_PAGES) {
     console.warn(`[teamhood-api] Hit max page limit (${MAX_PAGES}) for ${path}. Results may be truncated.`);
   }
 
@@ -123,7 +143,11 @@ async function resolveCardId(cardId) {
   if (cached) return cached;
 
   // Search items on the board for this display ID
-  const items = await fetchAllPages(`/boards/${BOARD_ID}/items`, { search: cardId });
+  const items = await fetchAllPages(`${V1}/items`, {
+    workspaceId: WORKSPACE_ID,
+    boardId: BOARD_ID,
+    search: cardId,
+  });
   for (const item of items) {
     const did = item.displayId || item.number || item.key;
     if (did === cardId) {
@@ -141,7 +165,7 @@ async function resolveCardId(cardId) {
 
 export async function getCard(cardId) {
   const uuid = await resolveCardId(cardId);
-  const data = await apiFetch(`/items/${uuid}`);
+  const data = await apiFetch(`${V1}/items/${uuid}`);
   if (!data) throw new Error(`Card not found: ${cardId}`);
   if (data.displayId) cacheDisplayId(data.displayId, data.id);
   return formatCard(data);
@@ -149,19 +173,25 @@ export async function getCard(cardId) {
 
 export async function getCardRaw(cardId) {
   const uuid = await resolveCardId(cardId);
-  const data = await apiFetch(`/items/${uuid}`);
+  const data = await apiFetch(`${V1}/items/${uuid}`);
   if (!data) throw new Error(`Card not found: ${cardId}`);
   if (data.displayId) cacheDisplayId(data.displayId, data.id);
   return data;
 }
 
 export async function listCards(filters = {}) {
-  const params = {};
+  const params = {
+    workspaceId: WORKSPACE_ID,
+    boardId: BOARD_ID,
+  };
   if (filters.archived !== undefined) params.archived = String(filters.archived);
   if (filters.status) params.status = filters.status;
-  if (filters.assignee_id) params.ownerId = filters.assignee_id;
+  if (filters.assignee_id) params.assignedUserId = filters.assignee_id;
+  if (filters.completed !== undefined) params.completed = String(filters.completed);
+  // Server-side tag filter (much faster than fetching all items)
+  if (filters.serverTag) params.tags = filters.serverTag;
 
-  let items = await fetchAllPages(`/boards/${BOARD_ID}/items`, params);
+  let items = await fetchAllPages(`${V1}/items`, params);
 
   // Default: parent cards only
   if (filters.parent_only !== false) {
@@ -183,10 +213,14 @@ export async function listCards(filters = {}) {
 export async function searchCards(query, filters = {}) {
   if (!query || !query.trim()) throw new Error('Search query is required');
 
-  const params = { search: query.trim() };
+  const params = {
+    workspaceId: WORKSPACE_ID,
+    boardId: BOARD_ID,
+    search: query.trim(),
+  };
   if (filters.archived !== undefined) params.archived = String(filters.archived);
 
-  let items = await fetchAllPages(`/boards/${BOARD_ID}/items`, params);
+  let items = await fetchAllPages(`${V1}/items`, params);
 
   if (filters.parent_only !== false) {
     items = items.filter(i => !i.parentId);
@@ -195,18 +229,23 @@ export async function searchCards(query, filters = {}) {
   return items.map(formatCard);
 }
 
-export async function createCard({ title, statusId, ownerId, description, tags, customFields, parentId }) {
+export async function createCard({ title, statusId, assignedUserId, description, tags, customFields, parentId, rowId }) {
   if (!title) throw new Error('Card title is required');
 
-  const body = { title };
+  const body = {
+    title,
+    workspaceId: WORKSPACE_ID,
+    boardId: BOARD_ID,
+  };
   if (statusId) body.statusId = statusId;
-  if (ownerId) body.ownerId = ownerId;
+  if (assignedUserId) body.assignedUserId = assignedUserId;
+  if (rowId) body.rowId = rowId;
   if (description) body.description = description;
   if (tags) body.tags = tags;
   if (customFields) body.customFields = customFields;
   if (parentId) body.parentId = await resolveCardId(parentId);
 
-  const data = await apiFetch(`/boards/${BOARD_ID}/items`, {
+  const data = await apiFetch(`${V1}/items`, {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -219,17 +258,31 @@ export async function updateCard(cardId, fields) {
   const uuid = await resolveCardId(cardId);
 
   // Fetch current card so we can merge for the PUT
-  const current = await apiFetch(`/items/${uuid}`);
+  const current = await apiFetch(`${V1}/items/${uuid}`);
   if (!current) throw new Error(`Card not found: ${cardId}`);
 
   const merged = { ...current, ...fields };
 
-  const data = await apiFetch(`/items/${uuid}`, {
+  const data = await apiFetch(`${V1}/items/${uuid}`, {
     method: 'PUT',
     body: JSON.stringify(merged),
   });
 
   if (data?.displayId) cacheDisplayId(data.displayId, data.id);
+  return formatCard(data);
+}
+
+export async function removeTag(cardId, tagToRemove) {
+  const uuid = await resolveCardId(cardId);
+  const current = await apiFetch(`${V1}/items/${uuid}`);
+  if (!current) throw new Error(`Card not found: ${cardId}`);
+
+  const updatedTags = (current.tags || []).filter(t => t !== tagToRemove);
+  const data = await apiFetch(`${V1}/items/${uuid}`, {
+    method: 'PUT',
+    body: JSON.stringify({ ...current, tags: updatedTags }),
+  });
+
   return formatCard(data);
 }
 
@@ -242,15 +295,21 @@ export async function listUsers() {
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
-  const data = await apiFetch(`/workspaces/${WORKSPACE_ID}/users`);
-  const users = unwrapItems(data).map(u => ({
-    id: u.id,
-    name: u.name || u.displayName || u.fullName || '',
-    email: u.email || '',
-  }));
-
-  setCache(cacheKey, users);
-  return users;
+  try {
+    const data = await apiFetch(`${V1}/users`);
+    const users = unwrapItems(data).map(u => ({
+      id: u.id,
+      name: u.name || u.title || u.displayName || u.fullName || '',
+      email: u.email || '',
+    }));
+    setCache(cacheKey, users);
+    return users;
+  } catch (err) {
+    if (err.message.includes('403')) {
+      return [];
+    }
+    throw err;
+  }
 }
 
 export async function getUserByName(name) {
@@ -280,7 +339,7 @@ export async function getBoardStatuses() {
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
-  const data = await apiFetch(`/boards/${BOARD_ID}/statuses`);
+  const data = await apiFetch(`${V1}/boards/${BOARD_ID}/statuses`);
   const statuses = unwrapItems(data).map(s => ({
     id: s.id,
     name: s.name || s.title || '',
@@ -296,7 +355,7 @@ export async function getBoardRows() {
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
-  const data = await apiFetch(`/boards/${BOARD_ID}/rows`);
+  const data = await apiFetch(`${V1}/boards/${BOARD_ID}/rows`);
   const rows = unwrapItems(data);
   setCache(cacheKey, rows);
   return rows;
@@ -307,10 +366,20 @@ export async function getBoardMetadata() {
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
-  const data = await apiFetch(`/boards/${BOARD_ID}`);
-  if (!data) throw new Error('Board not found');
-  setCache(cacheKey, data);
-  return data;
+  // Fetch workspace info + board list to find our board
+  const wsData = await apiFetch(`${V1}/workspaces/${WORKSPACE_ID}`);
+  const boards = await apiFetch(`${V1}/workspaces/${WORKSPACE_ID}/boards`);
+  const boardList = unwrapItems(boards);
+  const ourBoard = boardList.find(b => b.id === BOARD_ID) || boardList[0];
+
+  const result = {
+    workspace: wsData,
+    board: ourBoard,
+    allBoards: boardList.map(b => ({ id: b.id, name: b.name || b.title || '' })),
+  };
+
+  setCache(cacheKey, result);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +388,7 @@ export async function getBoardMetadata() {
 
 export async function getCardAttachments(cardId) {
   const uuid = await resolveCardId(cardId);
-  const data = await apiFetch(`/items/${uuid}/attachments`);
+  const data = await apiFetch(`${V1}/items/${uuid}/attachments`);
   return unwrapItems(data);
 }
 
@@ -374,19 +443,18 @@ export async function extractProjectInfo(cardId) {
 
 export async function getCardChildren(cardId) {
   const uuid = await resolveCardId(cardId);
-  const data = await apiFetch(`/items/${uuid}/children`);
-  if (!data) {
-    // Fallback: fetch all board items and filter by parentId
-    const allItems = await fetchAllPages(`/boards/${BOARD_ID}/items`);
-    return allItems.filter(i => i.parentId === uuid).map(formatCard);
-  }
-  return unwrapItems(data).map(formatCard);
+  // No dedicated children endpoint — fetch all items and filter by parentId
+  const allItems = await fetchAllPages(`${V1}/items`, {
+    workspaceId: WORKSPACE_ID,
+    boardId: BOARD_ID,
+  });
+  return allItems.filter(i => i.parentId === uuid).map(formatCard);
 }
 
 export async function getCardParent(cardId) {
   const card = await getCardRaw(cardId);
   if (!card.parentId) return { parent: null, message: 'This card has no parent' };
-  const parent = await apiFetch(`/items/${card.parentId}`);
+  const parent = await apiFetch(`${V1}/items/${card.parentId}`);
   if (!parent) return { parent: null, message: 'Parent card not found' };
   return formatCard(parent);
 }
@@ -404,9 +472,12 @@ function formatCard(card) {
     description: stripHtml(card.description || ''),
     statusId: card.statusId || null,
     statusName: card.statusName || card.status?.name || null,
-    ownerId: card.ownerId || null,
-    ownerName: card.ownerName || card.owner?.name || null,
+    assignedUserId: card.assignedUserId || null,
+    assignedUserName: resolveUserName(card.assignedUserId),
+    rowId: card.rowId || null,
     parentId: card.parentId || null,
+    completed: card.completed || false,
+    url: card.url || null,
     tags: (card.tags || []).map(t => typeof t === 'string' ? t : t.name || t),
     customFields: (card.customFields || card.customFieldValues || []).map(f => ({
       name: f.name || f.fieldName || f.label || 'unknown',

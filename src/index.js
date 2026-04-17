@@ -12,6 +12,7 @@ import { boardToolDefs, handleBoardTool } from './tools/board.js';
 import { attachmentToolDefs, handleAttachmentTool } from './tools/attachments.js';
 import { customFieldToolDefs, handleCustomFieldTool } from './tools/custom-fields.js';
 import { relationshipToolDefs, handleRelationshipTool } from './tools/relationships.js';
+import { quoteToolDefs, handleQuoteTool } from './tools/quotes.js';
 import { getConfig } from './teamhood-api.js';
 
 // ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ const allToolDefs = [
   ...attachmentToolDefs,
   ...customFieldToolDefs,
   ...relationshipToolDefs,
+  ...quoteToolDefs,
 ];
 
 // Map tool names to their handler functions
@@ -35,6 +37,7 @@ for (const def of boardToolDefs) toolHandlers.set(def.name, handleBoardTool);
 for (const def of attachmentToolDefs) toolHandlers.set(def.name, handleAttachmentTool);
 for (const def of customFieldToolDefs) toolHandlers.set(def.name, handleCustomFieldTool);
 for (const def of relationshipToolDefs) toolHandlers.set(def.name, handleRelationshipTool);
+for (const def of quoteToolDefs) toolHandlers.set(def.name, handleQuoteTool);
 
 // ---------------------------------------------------------------------------
 // Express app
