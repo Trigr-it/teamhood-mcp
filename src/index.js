@@ -14,7 +14,6 @@ import { customFieldToolDefs, handleCustomFieldTool } from './tools/custom-field
 import { relationshipToolDefs, handleRelationshipTool } from './tools/relationships.js';
 import { quoteToolDefs, handleQuoteTool } from './tools/quotes.js';
 import { getConfig } from './teamhood-api.js';
-import { mountPortal } from '../quote-dashboard.js';
 
 // ---------------------------------------------------------------------------
 // All tool definitions
@@ -134,12 +133,6 @@ app.post('/message', async (req, res) => {
 
   await transport.handlePostMessage(req, res);
 });
-
-// ---------------------------------------------------------------------------
-// Portal routes (landing page, pricing, live quotes, dashboard)
-// ---------------------------------------------------------------------------
-
-mountPortal(app);
 
 // ---------------------------------------------------------------------------
 // Start server
